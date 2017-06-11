@@ -6,9 +6,10 @@
 #
 language: c
 sudo: false
+dist: trusty
 
 git:
-  submodules: false  # whether to recursively clone submodules
+  submodules: true  # whether to recursively clone submodules
 
 cache:
   directories:
@@ -44,7 +45,6 @@ install:
  - travis_retry cabal update -v
  - sed -i 's/^jobs:/-- jobs:/' ${HOME}/.cabal/config
  - rm -fv cabal.project.local
- - "echo 'packages: .' > cabal.project"
  - rm -f cabal.project.freeze
  - cabal new-build -w ${HC} ${TEST} ${BENCH} --dep -j2 all
  - cabal new-build -w ${HC} --disable-tests --disable-benchmarks --dep -j2 all
@@ -62,7 +62,9 @@ script:
  - cd "$SRC_BASENAME/"
 ## from here on, CWD is inside the extracted source-tarball
  - rm -fv cabal.project.local
- - "echo 'packages: .' > cabal.project"
+ - cp ../../cabal.project .
+ - mkdir cabal
+ - cp -a ../../cabal/Cabal cabal/Cabal
  # this builds all libraries and executables (without tests/benchmarks)
  - rm -f cabal.project.freeze
  - cabal new-build -w ${HC} --disable-tests --disable-benchmarks all
