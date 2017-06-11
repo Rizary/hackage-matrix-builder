@@ -35,7 +35,7 @@ before_install:
  - HC=${CC}
  - unset CC
  - PATH=/opt/ghc/bin:/opt/ghc-ppa-tools/bin:$PATH
- - PKGNAME='y'
+ - PKGNAME='hackage-matrix-builder3'
 
 install:
  - cabal --version
