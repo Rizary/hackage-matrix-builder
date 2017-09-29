@@ -16,6 +16,7 @@ import Control.Monad.Reader (class MonadReader, ReaderT)
 import Control.Monad.Eff.Ref (Ref)
 import Control.Monad.Eff.Exception as E
 import Control.Monad.Aff (Aff)
+import Control.Apply (lift2)
 import Data.Int as Int
 import Data.Array as Arr
 import Data.Tuple as Tuple
@@ -93,8 +94,18 @@ getPackages = do
   case res.status of
     SC.StatusCode 200 -> do
       let
-        decodedApi = Arg.decodeJson (res.response :: Arg.Json)
-      MP.parseJsonToArrayS decodedApi
+        decodedApi = Arg.decodeJson (res.response) -- :: Arg.Json)
+      case decodedApi of
+        Right a -> pure $ RD.Success a
+        Left e  -> pure $ RD.Failure (E.error "decoding failed")
+       -- MP.parseJsonToArrayS decodedApi
+    SC.StatusCode 304 -> do
+      let
+        decodedApi = Arg.decodeJson (res.response) -- :: Arg.Json)
+      case decodedApi of
+        Right a -> pure $ RD.Success a
+        Left e  -> pure $ RD.Failure (E.error "decoding failed")
+       -- MP.parseJsonToArrayS decodedApi
     SC.StatusCode _ -> pure (RD.Failure (E.error "Report Not Found"))
 
 -- /v2/packages/{pkgname}/tags
@@ -110,7 +121,7 @@ getPackageTags pkgName = do
                                     , method = Left GET
                                     })
       case res.status of
-        SC.StatusCode 200 -> do
+        (SC.StatusCode 200)  -> do
           let
             decodedApi = Arg.decodeJson (res.response :: Arg.Json)
           MP.parseJsonToArrayS decodedApi
@@ -140,7 +151,7 @@ getPackageIdxTsReports :: forall e m. MonadAff (ajax :: Affjax.AJAX | e) m
                        => T.PackageName
                        -> T.PkgIdxTs
                        -> m (RD.RemoteData E.Error T.PackageIdxTsReports)
-getPackageIdxTsReports pkgName idx = 
+getPackageIdxTsReports pkgName idx =
  if Str.null pkgName
   then pure (RD.Failure (E.error "Package is Empty"))
   else do
@@ -240,8 +251,11 @@ getTagsWithPackages = do
   case res.status of
     SC.StatusCode 200 -> do
       let
-        decodedApi = Arg.decodeJson (res.response :: Arg.Json)
-      MP.toTagsWithPackages decodedApi
+        decodedApi = Arg.decodeJson (res.response) -- :: SM.StrMap (Array String))
+      --MP.toTagsWithPackages decodedApi
+      case decodedApi of
+        Right a -> pure $ RD.Success a
+        Left e  -> pure $ RD.Failure (E.error "decoding failed")
     SC.StatusCode _ -> pure (RD.Failure (E.error "Report Not Found"))
 
 -- /v2/tags with pkgnames=false
@@ -254,6 +268,10 @@ getTagsWithoutPackage = do
                                  })
   case res.status of
     SC.StatusCode 200 -> do
+      let
+        decodedApi = Arg.decodeJson (res.response :: Arg.Json)
+      MP.parseJsonToArrayS decodedApi
+    SC.StatusCode 304 -> do
       let
         decodedApi = Arg.decodeJson (res.response :: Arg.Json)
       MP.parseJsonToArrayS decodedApi

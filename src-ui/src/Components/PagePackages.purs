@@ -5,26 +5,32 @@ import Data.Array as Arr
 import Data.Char as Char
 import Data.Set as Set
 import Data.String as Str
+import Data.StrMap as SM
+import Data.Foldable as F
+import Data.Tuple as Tuple
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Lib.MatrixApi as Api
+import Lib.MatrixApi2 as Api2
 import Lib.MiscFFI as MiscFFI
 import Lib.Types as T
 import Network.RemoteData as RD
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Reader.Class (asks)
 import Data.Maybe (Maybe(..), isNothing)
-import Prelude ( type (~>), Unit, Void, bind, const, discard, not, otherwise, pure, ($), (<$>), (<<<), (<>))
+import Prelude ( type (~>), Unit, Void, append, bind, const, discard, not, otherwise, pure, ($), (<$>), (<<<), (<>))
 import Debug.Trace
 
 type State =
  {
-   packages :: Array T.PackageMeta
- , tags :: Array T.Tag
+   packages :: Array T.PackageName
+ , tags :: Array T.TagName
+ , tagsPkg :: T.TagsWithPackages
+ , tagsMap :: SM.StrMap (Array T.TagName)
  , clicked :: Boolean
- , selectedTag :: Set.Set T.TagName
+ , selectedTag :: Array T.TagName
  , selectedPrefix :: Set.Set T.Prefixs
  }
 
@@ -51,8 +57,10 @@ component = H.lifecycleComponent
    {
      packages: []
    , tags: []
+   , tagsPkg: SM.empty
+   , tagsMap: SM.empty
    , clicked: false
-   , selectedTag: Set.empty
+   , selectedTag: []
    , selectedPrefix: Set.empty
    }
 
@@ -91,28 +99,55 @@ component = H.lifecycleComponent
               [ HP.classes (H.ClassName <$> ["headers","clearfix"]) ] $ buildPrefixs <$> prefixs
           , HH.ol
               [ HP.class_ (H.ClassName "packages") ] $
-                Arr.take 650 $ buildPackages state <$> packages'
+                Arr.take 650 $ buildPackages state <$> state.packages --(packages' state)
           ]
       ]
     where
-      packages' = (tagFilter <<< prefixFilter) state.packages
-      tagFilter = Arr.filter (tagContained state.selectedTag)
-      prefixFilter = Arr.filter (prefixContained state.selectedPrefix)
+      packages' st = tagFilter st --(prefixFilter st)
+      tagFilter {selectedTag, tagsPkg} = Arr.concatMap (concatTags tagsPkg) selectedTag
+      prefixFilter {selectedPrefix, packages} = Arr.filter (prefixContained selectedPrefix) packages
 
   eval :: Query ~> H.ComponentDSL State Query Void (Api.Matrix e)
   eval (Initialize next) = do
     st <- H.get
-    tagItem <- H.lift Api.getTagList
-    pkgRef <- asks _.packageList
-    packageList <- liftEff (Ref.readRef pkgRef)
-    let packages = RD.withDefault {offset: 0, count: 0, items: []} packageList
-    initState <- H.put $ st { packages = packages.items, tags = tagItem.items, clicked = false }
+    listPkg <- H.lift Api2.getPackages
+    tagList <- H.lift Api2.getTagsWithoutPackage
+    tagPkgList <- H.lift Api2.getTagsWithPackages
+    let
+      tags' = case tagPkgList of
+        RD.Success a -> a
+        _ -> SM.empty
+      pkgArr =
+        case listPkg of
+          RD.Success arr -> arr
+          _ -> []
+      pkgTagList :: SM.StrMap (Array T.TagName)
+      pkgTagList =
+        SM.fromFoldableWith append $ do
+          Tuple.Tuple k vs <- SM.toUnfoldable tags'
+          v <- pkgArr
+          pure $ Tuple.Tuple v [k]
+    initState <- H.put $ st { packages =
+                                case listPkg of
+                                  RD.Success arr -> arr
+                                  _              -> []
+                            , tags =
+                                case tagList of
+                                  RD.Success arr -> arr
+                                  _              -> []
+                            , tagsPkg =
+                                case tagPkgList of
+                                  RD.Success map -> map
+                                  _              -> SM.empty
+                            --, tagsMap = pkgTagList
+                            , clicked = false
+                            }
     pure next
 
   eval (SelectedTag tag next) = do
-    H.modify \st -> st { selectedTag = if (Set.member tag st.selectedTag)
-                                          then Set.delete tag st.selectedTag
-                                          else Set.insert tag st.selectedTag }
+    H.modify \st -> st { selectedTag = if (F.elem tag st.selectedTag)
+                                          then Arr.delete tag st.selectedTag
+                                          else Arr.insert tag st.selectedTag }
     pure next
 
   eval (SelectedPrefix prefix next) = do
@@ -121,7 +156,7 @@ component = H.lifecycleComponent
 
   eval (HandleCheckBox st isCheck next)
     | isCheck = do
-        H.modify _ { packages = Arr.filter indexStateContained st.packages}
+        H.modify _ { packages = []} -- TODO: get report for Arr.filter indexStateContained
         pure next
     | otherwise = eval (Initialize next)
 
@@ -150,36 +185,54 @@ buildTags tag =
     ]
     [ HH.text $ tag ]
 
-buildTags' :: forall p. State -> T.Tag -> HH.HTML p (Query Unit)
+buildTags' :: forall p. State -> T.TagName -> HH.HTML p (Query Unit)
 buildTags' st tag =
   HH.a
     [ HP.classes (H.ClassName <$> ["tag-item", clickStatus])
-    , HP.attr (H.AttrName "data-tag-name") tag.name
-    , HE.onClick $ HE.input_ (SelectedTag tag.name)
+    , HP.attr (H.AttrName "data-tag-name") tag
+    , HE.onClick $ HE.input_ (SelectedTag tag)
     ]
-    [ HH.text $ tag.name ]
+    [ HH.text $ tag ]
   where
-    clickStatus = if (Set.member tag.name st.selectedTag)  then "active" else " "
+    clickStatus = if (F.elem tag st.selectedTag)  then "active" else " "
 
-buildPackages :: forall p. State -> T.PackageMeta -> HH.HTML p (Query Unit)
-buildPackages state packageMeta =
+buildPackages :: forall p. State -> T.PackageName -> HH.HTML p (Query Unit)
+buildPackages state pkgName =
   HH.li_ $
     [ HH.a
-        [ HP.href $ "#/package/" <> packageMeta.name]
-        [ HH.text packageMeta.name ]
-    ] <> (buildTags <$> packageMeta.tags) <> [ HH.small_ [ HH.text $ " - index-state: " <> (MiscFFI.formatDate packageMeta.report) ] ]
+        [ HP.href $ "#/package/" <> pkgName]
+        [ HH.text pkgName ]
+    ] <> (buildTags <$> (getTheTags state pkgName)) <> [ HH.small_
+                                                           [ HH.text $ " - index-state: " -- <> (MiscFFI.formatDate packageMeta.report)
+                                                           ]
+                                                       ]
 
 tagContained :: Set.Set T.TagName -> T.PackageMeta -> Boolean
 tagContained selectedTags { tags }
     | Set.isEmpty selectedTags = true
     | otherwise            = not Set.isEmpty (Set.fromFoldable tags `Set.intersection` selectedTags)
 
-prefixContained :: Set.Set T.Prefixs -> T.PackageMeta -> Boolean
-prefixContained selectedPrefix { name }
+prefixContained :: Set.Set T.Prefixs -> T.PackageName -> Boolean
+prefixContained selectedPrefix pkgName
     | Set.isEmpty selectedPrefix = true
-    | otherwise              = Set.member (Str.toUpper $ Str.take 1 name) selectedPrefix
+    | otherwise              = Set.member (Str.toUpper $ Str.take 1 pkgName) selectedPrefix
 
 indexStateContained :: T.PackageMeta -> Boolean
 indexStateContained pkgMeta
     | isNothing pkgMeta.report = false
     | otherwise = true
+
+concatTags :: T.TagsWithPackages -> T.TagName -> Array T.PackageName
+concatTags smpkg tag =
+  case SM.lookup tag smpkg of
+    Just a -> a
+    Nothing -> []
+
+getTheTags :: State -> T.PackageName -> Array T.TagName
+getTheTags { tagsMap } pkg =
+  case SM.lookup pkg tagsMap of
+    Just a -> a
+    Nothing -> []
+
+
+
