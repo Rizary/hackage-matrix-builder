@@ -1,12 +1,13 @@
 module Components.PagePackages where
 
+import Debug.Trace
 import Control.Monad.Eff.Ref as Ref
 import Data.Array as Arr
 import Data.Char as Char
-import Data.Set as Set
-import Data.String as Str
-import Data.StrMap as SM
 import Data.Foldable as F
+import Data.Set as Set
+import Data.StrMap as SM
+import Data.String as Str
 import Data.Tuple as Tuple
 import Halogen as H
 import Halogen.HTML as HH
@@ -20,8 +21,7 @@ import Network.RemoteData as RD
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Reader.Class (asks)
 import Data.Maybe (Maybe(..), isNothing)
-import Prelude ( type (~>), Unit, Void, append, bind, const, discard, not, otherwise, pure, ($), (<$>), (<<<), (<>))
-import Debug.Trace
+import Prelude (type (~>), Unit, Void, class Ord, append, bind, const, discard, not, otherwise, pure, ($), (<$>), (<<<), (<>))
 
 type State =
  {
@@ -30,7 +30,7 @@ type State =
  , tagsPkg :: T.TagsWithPackages
  , tagsMap :: SM.StrMap (Array T.TagName)
  , clicked :: Boolean
- , selectedTag :: Array T.TagName
+ , selectedTag :: Set.Set T.TagName
  , selectedPrefix :: Set.Set T.Prefixs
  }
 
@@ -60,7 +60,7 @@ component = H.lifecycleComponent
    , tagsPkg: SM.empty
    , tagsMap: SM.empty
    , clicked: false
-   , selectedTag: []
+   , selectedTag: Set.empty
    , selectedPrefix: Set.empty
    }
 
@@ -99,34 +99,30 @@ component = H.lifecycleComponent
               [ HP.classes (H.ClassName <$> ["headers","clearfix"]) ] $ buildPrefixs <$> prefixs
           , HH.ol
               [ HP.class_ (H.ClassName "packages") ] $
-                Arr.take 650 $ buildPackages state <$> state.packages --(packages' state)
+                Arr.take 650 $ buildPackages state <$> (packages' state)
           ]
       ]
     where
-      packages' st = tagFilter st --(prefixFilter st)
-      tagFilter {selectedTag, tagsPkg} = Arr.concatMap (concatTags tagsPkg) selectedTag
-      prefixFilter {selectedPrefix, packages} = Arr.filter (prefixContained selectedPrefix) packages
+      packages' st = ((tagFilter st) <<< (prefixFilter st)) state.packages
+      tagFilter {tagsMap, selectedTag, tagsPkg} = Arr.filter (tagContained selectedTag tagsMap)
+      prefixFilter {selectedPrefix, packages} = Arr.filter (prefixContained selectedPrefix)
 
   eval :: Query ~> H.ComponentDSL State Query Void (Api.Matrix e)
   eval (Initialize next) = do
     st <- H.get
-    listPkg <- H.lift Api2.getPackages
+    pkgRef <- asks _.packages
+    listPkg <- liftEff $ Ref.readRef pkgRef
     tagList <- H.lift Api2.getTagsWithoutPackage
     tagPkgList <- H.lift Api2.getTagsWithPackages
     let
-      tags' = case tagPkgList of
+      pkgTag = case tagPkgList of
         RD.Success a -> a
         _ -> SM.empty
+      tagPkgs = pkgTagList pkgTag
       pkgArr =
         case listPkg of
           RD.Success arr -> arr
           _ -> []
-      pkgTagList :: SM.StrMap (Array T.TagName)
-      pkgTagList =
-        SM.fromFoldableWith append $ do
-          Tuple.Tuple k vs <- SM.toUnfoldable tags'
-          v <- pkgArr
-          pure $ Tuple.Tuple v [k]
     initState <- H.put $ st { packages =
                                 case listPkg of
                                   RD.Success arr -> arr
@@ -139,15 +135,17 @@ component = H.lifecycleComponent
                                 case tagPkgList of
                                   RD.Success map -> map
                                   _              -> SM.empty
-                            --, tagsMap = pkgTagList
+                            , tagsMap = tagPkgs
                             , clicked = false
                             }
+    traceAnyA tagPkgs
+    traceAnyA tagPkgList
     pure next
 
   eval (SelectedTag tag next) = do
-    H.modify \st -> st { selectedTag = if (F.elem tag st.selectedTag)
-                                          then Arr.delete tag st.selectedTag
-                                          else Arr.insert tag st.selectedTag }
+    H.modify \st -> st { selectedTag = if (Set.member tag st.selectedTag)
+                                          then Set.delete tag st.selectedTag
+                                          else Set.insert tag st.selectedTag }
     pure next
 
   eval (SelectedPrefix prefix next) = do
@@ -194,7 +192,7 @@ buildTags' st tag =
     ]
     [ HH.text $ tag ]
   where
-    clickStatus = if (F.elem tag st.selectedTag)  then "active" else " "
+    clickStatus = if (Set.member tag st.selectedTag)  then "active" else " "
 
 buildPackages :: forall p. State -> T.PackageName -> HH.HTML p (Query Unit)
 buildPackages state pkgName =
@@ -207,10 +205,16 @@ buildPackages state pkgName =
                                                            ]
                                                        ]
 
-tagContained :: Set.Set T.TagName -> T.PackageMeta -> Boolean
-tagContained selectedTags { tags }
+tagContained :: Set.Set T.TagName -> SM.StrMap (Array T.TagName) -> T.PackageName -> Boolean
+tagContained selectedTags tagsMap pkgName
     | Set.isEmpty selectedTags = true
-    | otherwise            = not Set.isEmpty (Set.fromFoldable tags `Set.intersection` selectedTags)
+    | otherwise            =
+      let
+        tags =
+          case SM.lookup pkgName tagsMap of
+            Just a  -> a
+            Nothing -> []
+      in not Set.isEmpty (Set.fromFoldable tags `Set.intersection` selectedTags)
 
 prefixContained :: Set.Set T.Prefixs -> T.PackageName -> Boolean
 prefixContained selectedPrefix pkgName
@@ -234,5 +238,11 @@ getTheTags { tagsMap } pkg =
     Just a -> a
     Nothing -> []
 
-
+pkgTagList :: SM.StrMap (Array T.PackageName)
+           -> SM.StrMap (Array T.TagName)
+pkgTagList m =
+        SM.fromFoldableWith append $ do
+          Tuple.Tuple k vs <- SM.toUnfoldable m
+          v <- vs
+          pure (Tuple.Tuple v [k])
 
