@@ -64,6 +64,7 @@ import           Servant.Reflex
 
 import           API
 import           PkgId
+import           Router
 
 
 main :: IO ()
@@ -104,12 +105,20 @@ utc2unix x = ceiling (realToFrac (utcTimeToPOSIXSeconds x) :: Double)
 
 bodyElement4 :: forall t m . (SupportsServantReflex t m, MonadFix m, MonadIO m, MonadHold t m, PostBuild t m, DomBuilder t m, Adjustable t m, DomBuilderSpace m ~ GhcjsDomSpace) => m ()
 bodyElement4 = mdo
+  display routeResult
   dynLoc <- browserHistoryWith getLocationUri
   let dynFrag = decodeFrag . T.pack . uriFragment <$> dynLoc
-
+      evText  = setRouteE
+  (_, setRouteE) <- runSetRouteT $ app dynFrag
+  routeResult <- holdDyn "" evText
   -- ticker1 <- tickLossy 1 =<< liftIO getCurrentTime
 --    ticker1cnt <- count ticker1
+  pure ()
 
+app :: forall t r m. (SetRoute t Text m, SupportsServantReflex t m, MonadFix m, MonadIO m, MonadHold t m, PostBuild t m, DomBuilder t m, Adjustable t m, DomBuilderSpace m ~ GhcjsDomSpace) 
+    => Dynamic t FragRoute
+    -> m ()
+app dynFrag = do
   -- top-level PB event
   evPB0 <- getPostBuild
 
@@ -371,7 +380,7 @@ bodyElement4 = mdo
         ddReports <- el "p" $ do
           evQButton <- button "Queue a build"
           text " for the index-state "
-          tmp <- dropdown (PkgIdxTs 0) xs ddCfg
+          tmp <- routePkgIdxTs pn (PkgIdxTs 0) xs ddCfg
           text " shown below"
 
           _ <- putQueue (constDyn $ Right pn) (Right <$> _dropdown_value tmp) (constDyn $ Right (QEntryUpd (-1))) evQButton
@@ -402,26 +411,9 @@ bodyElement4 = mdo
             pure $ tagPromptlyDyn tVal addResult
           pure ()
         
-        let evReports'   = updated (_dropdown_value ddReports)
-            dynIdxSt     = ddReports ^. dropdown_value
-            evIdxChange  = updated dynIdxSt --ddReports ^. dropdown_change
-        _ <- mdo
-          historyState <- manageHistory $ HistoryCommand_PushState <$> setState
-          let 
-            f  (currentSet, currentHistoryState, oldRoute) idxChange =
-              let newRoute = switchPkgRoute currentSet oldRoute idxChange
-              in 
-                HistoryStateUpdate
-                { _historyStateUpdate_state = DOM.SerializedScriptValue jsNull
-                , _historyStateUpdate_title = ""
-                , _historyStateUpdate_uri   = newRoute
-                }
-            setState = attachWith f ((\a b c -> (a,b,c)) <$> current dynReports 
-                                                         <*> current historyState 
-                                                         <*> current dynLoc
-                                    ) evIdxChange
-          pure historyState
-        display dynIdxSt
+        let dynIdxSt     = ddReports ^. dropdown_value
+            evReports'   = updated dynIdxSt
+            --evIdxChange  = updated dynIdxSt --ddReports ^. dropdown_change
         --display $ holdDyn (PkgIdxTs 0) evIdxChange
         evRepSum <- getPackageReportSummary (constDyn $ Right pn) (Right <$> dynIdxSt) (leftmost [evReports' $> (), ticker4 $> ()])
         dynRepSum <- holdUniqDyn =<< holdDyn (PkgIdxTsReport pn (PkgIdxTs 0) [] mempty) evRepSum
@@ -742,22 +734,6 @@ findInitialDropDown (Just idx) pkgSet = if Set.member idx pkgSet
                                         then Set.foldr (\a b -> if a == b then a else b) idx pkgSet
                                         else Set.findMax pkgSet
 findInitialDropDown Nothing pkgSet    = Set.findMax pkgSet
-
-switchPkgRoute :: Set PkgIdxTs -> URI ->  PkgIdxTs -> Maybe URI 
-switchPkgRoute setPkgIdx oldRoute (PkgIdxTs 0) = Nothing
-switchPkgRoute setPkgIdx oldRoute idxChange =
-  let routeS  = (T.pack . uriFragment) oldRoute
-      rootURI = "#/package/"
-  in case T.stripPrefix rootURI routeS of
-    Just sfx | (Just pkgN, Just pkgIdx) <- pkgNFromText sfx
-             , True <- idxChange /= pkgIdx
-             , True <- not (Set.null setPkgIdx)
-             , Just setMax <- Set.lookupMax setPkgIdx
-               -> if setMax == idxChange
-                  then Nothing
-                  else parseURI . T.unpack $ rootURI <> (pkgNToText pkgN) <> (T.pack "@") <> (idxTsToText idxChange)
-             | otherwise -> Nothing
-    Nothing  -> Nothing
 
 toggleTagSet :: TagN -> Set.Set TagN -> Set.Set TagN
 toggleTagSet tn st = if Set.member tn st then Set.delete tn st else Set.insert tn st
